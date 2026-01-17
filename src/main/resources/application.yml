@@ -1,0 +1,53 @@
+spring:
+  application:
+    name: ScrumAiAssistant
+  datasource:
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:scrumdb}
+    username: ${DB_USER:yuvaraj}
+    password: ${DB_PASS:}
+    driver-class-name: org.postgresql.Driver
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+  flyway:
+    enabled: true
+    baseline-on-migrate: true
+  servlet:
+    multipart:
+      max-file-size: 50MB
+      max-request-size: 50MB
+
+server:
+  port: 8080
+
+jira:
+  url: https://yuva-raj.atlassian.net
+  email: ${JIRA_EMAIL:yuvaraj8019@gmail.com}
+  api-token: ${JIRA_TOKEN:jira_token_placeholder}
+
+ai:
+  provider: ${AI_PROVIDER:AUTO}
+  global:
+    temperature: ${AI_TEMPERATURE:0.2}
+    max-tokens: ${AI_MAX_TOKENS:8192}
+  gemini:
+    api-key: ${GEMINI_API_KEY:gemini_api_key_placeholder}
+    base-url: ${GEMINI_BASE_URL:https://generativelanguage.googleapis.com}
+    model: ${GEMINI_MODEL:gemini-flash-latest}
+  openai:
+    api-key: ${OPENAI_API_KEY:}
+    base-url: ${OPENAI_BASE_URL:https://api.openai.com}
+    model: ${OPENAI_MODEL:gpt-4o-mini}
+  groq:
+    api-key: ${GROQ_API_KEY:}
+    base-url: ${GROQ_BASE_URL:https://api.groq.com/openai/v1}
+    model: ${GROQ_MODEL:llama-3.1-70b-versatile}
+
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html
+  api-docs:
+    path: /v3/api-docs
