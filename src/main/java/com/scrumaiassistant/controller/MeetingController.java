@@ -22,6 +22,7 @@ import java.util.UUID;
 @RequestMapping("/api/meetings")
 @RequiredArgsConstructor
 @Tag(name = "Meetings", description = "Meeting Management APIs")
+@CrossOrigin
 public class MeetingController {
 
     private final MeetingService meetingService;
