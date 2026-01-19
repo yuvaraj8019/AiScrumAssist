@@ -174,6 +174,28 @@ public class MeetingServiceImpl implements MeetingService {
                 }
             }
             
+            // Comments
+            if (result.comments() != null) {
+                for (AiExtractionResult.Comment comment : result.comments()) {
+                    items.add(ExtractedItem.builder()
+                            .meeting(meeting)
+                            .itemType(ItemType.COMMENT)
+                            .content(toJson(comment))
+                            .build());
+                }
+            }
+
+            // Ticket Updates
+            if (result.ticketUpdates() != null) {
+                for (AiExtractionResult.TicketUpdate update : result.ticketUpdates()) {
+                    items.add(ExtractedItem.builder()
+                            .meeting(meeting)
+                            .itemType(ItemType.TICKET_UPDATE)
+                            .content(toJson(update))
+                            .build());
+                }
+            }
+
             extractedItemRepository.saveAll(items);
             
             meeting.setStatus(MeetingStatus.COMPLETED);

@@ -4,5 +4,6 @@ public enum ItemType {
     DECISION,
     BLOCKER,
     ACTION_ITEM,
-    COMMENT
+    COMMENT,
+    TICKET_UPDATE
 }
