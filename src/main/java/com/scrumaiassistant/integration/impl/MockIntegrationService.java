@@ -26,4 +26,9 @@ public class MockIntegrationService implements IntegrationService {
     public void sendNotification(String message) {
         log.info("Sending Slack notification: {}", message);
     }
+
+    @Override
+    public void addCommentToExternalTask(String externalKey, Task task, String commentBody) {
+        log.info("Mock addComment on {} for task '{}': {}", externalKey, task.getTitle(), commentBody);
+    }
 }
