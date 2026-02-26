@@ -26,4 +26,10 @@ public class AzureClient implements AgileToolClient {
         // Simulating success
         return "AZ-" + UUID.randomUUID().toString().substring(0, 5);
     }
+
+    @Override
+    public void addComment(String issueKey, String comment) {
+        // Azure Boards comment support placeholder
+        log.info("Azure addComment (stub) for issue {}: {}", issueKey, comment);
+    }
 }

@@ -49,6 +49,24 @@ public class IntegrationServiceImpl implements IntegrationService {
     }
 
     @Override
+    public void addCommentToExternalTask(String externalKey, Task task, String commentBody) {
+        if (externalKey == null || externalKey.isBlank() || externalKey.startsWith("FAIL-") || externalKey.startsWith("ERR-")) {
+            log.warn("Skipping addComment for invalid externalKey: {}", externalKey);
+            return;
+        }
+        AgileToolClient client = clientMap.get(task.getToolType());
+        if (client == null) {
+            log.warn("No client found for tool type: {} — cannot add comment to {}", task.getToolType(), externalKey);
+            return;
+        }
+        try {
+            client.addComment(externalKey, commentBody);
+        } catch (Exception e) {
+            log.error("Failed to add comment to external task {}", externalKey, e);
+        }
+    }
+
+    @Override
     public void updateTaskStatus(Task task) {
         log.info("Updating task status in {} for ID: {}", task.getToolType(), task.getExternalKeyOrId());
     }
@@ -58,3 +76,4 @@ public class IntegrationServiceImpl implements IntegrationService {
         log.info("Sending Slack notification: {}", message);
     }
 }
+

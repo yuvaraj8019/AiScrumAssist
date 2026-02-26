@@ -21,7 +21,7 @@ public class AiExtractionServiceImpl implements AiExtractionService {
     private final ObjectMapper objectMapper;
 
     private static final String SYSTEM_PROMPT = """
-            You are Antigravity, a Scrum AI Assistant used by backend automation to update Jira/Azure Boards.
+            You are AI Scrum Assistant, a Scrum AI Assistant used by backend automation to update Jira/Azure Boards.
 
             TASK:
             From the Scrum meeting transcript, do the following:

@@ -31,17 +31,17 @@ public class JiraClient implements AgileToolClient {
                 log.warn("Jira Email is not set correctly. Calls might fail.");
                 email = "dummy"; // Prevent NPE
             }
-            
+
             String auth = email + ":" + jiraProperties.getApiToken();
             String encodedAuth = Base64.getEncoder().encodeToString(auth.getBytes(StandardCharsets.UTF_8));
-            
+
             webClient = webClientBuilder
                     .baseUrl(jiraProperties.getUrl())
                     .defaultHeader(HttpHeaders.AUTHORIZATION, "Basic " + encodedAuth)
                     .defaultHeader(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE)
                     .build();
-            
-            log.info("JiraClient initialized with Email: {} (Length: {}), Token Length: {}", 
+
+            log.info("JiraClient initialized with Email: {} (Length: {}), Token Length: {}",
                      email != null ? email.replaceAll("(?<=.{2}).(?=.*@)", "*") : "null",
                      email != null ? email.length() : 0,
                      jiraProperties.getApiToken() != null ? jiraProperties.getApiToken().length() : 0);
@@ -57,7 +57,7 @@ public class JiraClient implements AgileToolClient {
     public String createTask(String projectKey, String title, String description) {
         init();
         log.info("Creating Jira Task in project {} with title {}", projectKey, title);
-        
+
         try {
             Map<String, Object> payload = Map.of(
                 "fields", Map.of(
@@ -80,11 +80,40 @@ public class JiraClient implements AgileToolClient {
                 log.info("Successfully created Jira issue: {}", key);
                 return key;
             }
-            
+
         } catch (Exception e) {
             log.error("Failed to create Jira task", e);
             throw new RuntimeException("Jira creation failed: " + e.getMessage());
         }
         return null;
+    }
+
+    /**
+     * Adds a comment to an existing Jira issue using the REST API v2 comment endpoint.
+     * Non-fatal: logs errors but does not propagate exceptions to avoid breaking the pipeline.
+     */
+    @Override
+    public void addComment(String issueKey, String comment) {
+        init();
+        if (issueKey == null || issueKey.isBlank() || comment == null || comment.isBlank()) {
+            log.warn("Skipping addComment: issueKey or comment is blank. issueKey={}", issueKey);
+            return;
+        }
+        log.info("Adding comment to Jira issue: {}", issueKey);
+        try {
+            Map<String, Object> payload = Map.of("body", comment);
+
+            webClient.post()
+                    .uri("/rest/api/2/issue/{issueKey}/comment", issueKey)
+                    .bodyValue(payload)
+                    .retrieve()
+                    .bodyToMono(Map.class)
+                    .block();
+
+            log.info("Successfully added comment to Jira issue: {}", issueKey);
+        } catch (Exception e) {
+            log.error("Failed to add comment to Jira issue: {}", issueKey, e);
+            // Non-fatal: log but don't fail the whole pipeline
+        }
     }
 }

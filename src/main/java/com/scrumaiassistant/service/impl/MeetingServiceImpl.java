@@ -21,6 +21,7 @@ import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -75,7 +76,6 @@ public class MeetingServiceImpl implements MeetingService {
     @Transactional
     public void uploadAudio(UUID id, MultipartFile file) {
         Meeting meeting = getMeetingEntity(id);
-        // In a real app, upload to S3/Azure Blob. Here we just mock it.
         meeting.setAudioFilename(file.getOriginalFilename());
         meeting.setStatus(MeetingStatus.UPLOADED);
         meetingRepository.save(meeting);
@@ -92,24 +92,56 @@ public class MeetingServiceImpl implements MeetingService {
         log.info("Transcript added for meeting {}", id);
     }
 
-    @Async
+    /**
+     * FIX #1 — IDEMPOTENCY GUARD:
+     * Before scheduling the async task, mark the meeting as EXTRACTED (processing started)
+     * inside a synchronous @Transactional call. Any subsequent /process call will see the
+     * non-TRANSCRIBED status and return early, preventing duplicate Jira tickets.
+     *
+     * FIX #2 — @Async + @Transactional conflict:
+     * Spring cannot apply @Transactional to @Async methods on the same proxy bean.
+     * The solution: the synchronous outer method handles the status guard + commit, and
+     * the actual async work is delegated to a separate method with its own transaction
+     * using Propagation.REQUIRES_NEW (processMeetingAsync).
+     */
     @Override
     @Transactional
     public void processMeeting(UUID id) {
         Meeting meeting = getMeetingEntity(id);
-        log.info("Starting processing for meeting {}", id);
+
+        // IDEMPOTENCY GUARD — prevent duplicate processing
+        if (meeting.getStatus() != MeetingStatus.TRANSCRIBED && meeting.getStatus() != MeetingStatus.UPLOADED) {
+            log.warn("Meeting {} is already in status '{}'. Skipping re-process to prevent duplicates.",
+                    id, meeting.getStatus());
+            return;
+        }
+
+        // Mark as EXTRACTED before handing off to async thread
+        meeting.setStatus(MeetingStatus.EXTRACTED);
+        meetingRepository.save(meeting);
+        log.info("Meeting {} marked EXTRACTED. Triggering async processing.", id);
+
+        // Delegate to async method (must be called via the proxy — see Spring @Async limitation)
+        processMeetingAsync(id);
+    }
+
+    @Async
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public void processMeetingAsync(UUID id) {
+        Meeting meeting = getMeetingEntity(id);
+        log.info("Starting async AI processing for meeting {}", id);
 
         try {
-            // 1. Extract Info
+            // 1. Extract Info from AI
             AiExtractionResult result = aiExtractionService.extractInfo(
                     meeting.getId().toString(),
-                    meeting.getProjectKey(), 
+                    meeting.getProjectKey(),
                     meeting.getTranscript()
             );
-            
+
             // 2. Save Extracted Items
             List<ExtractedItem> items = new ArrayList<>();
-            
+
             // Decisions
             if (result.decisions() != null) {
                 for (String decision : result.decisions()) {
@@ -120,61 +152,64 @@ public class MeetingServiceImpl implements MeetingService {
                             .build());
                 }
             }
-            
+
             // Blockers
             if (result.blockers() != null) {
                 for (AiExtractionResult.Blocker blocker : result.blockers()) {
-                     items.add(ExtractedItem.builder()
+                    items.add(ExtractedItem.builder()
                             .meeting(meeting)
                             .itemType(ItemType.BLOCKER)
                             .content(toJson(blocker))
                             .build());
                 }
             }
-            
+
             // Action Items
             if (result.actionItems() != null) {
-                 for (AiExtractionResult.ActionItem actionItem : result.actionItems()) {
+                for (AiExtractionResult.ActionItem actionItem : result.actionItems()) {
                     items.add(ExtractedItem.builder()
                             .meeting(meeting)
                             .itemType(ItemType.ACTION_ITEM)
                             .content(toJson(actionItem))
                             .build());
-                 }
-            }
-            
-            // Tasks -> Create and Push
-            if (result.tasks() != null) { // CHANGED from jiraIssues to tasks
-                for (AiExtractionResult.JiraTask issue : result.tasks()) {
-                     // Create Task
-                     Task task = Task.builder()
-                             .meeting(meeting)
-                             .toolType(meeting.getToolType())
-                             .title(issue.title())
-                             .description(issue.description())
-                             .priority(issue.priority())
-                             .assignee(issue.assignee())
-                             .status(TaskStatus.NEW)
-                             .build();
-                             
-                     if (issue.dueDate() != null) {
-                         try {
-                            // Simple parsing, assuming ISO-8601 YYYY-MM-DD
-                             task.setDueDate(java.time.LocalDate.parse(issue.dueDate()).atStartOfDay()); 
-                         } catch (Exception ignored) {}
-                     }
-                     
-                     task = taskRepository.save(task);
-                     
-                     // Push to Jira/Azure
-                     String externalId = integrationService.createExternalTask(task);
-                     task.setExternalKeyOrId(externalId);
-                     task.setStatus(TaskStatus.PUSHED);
-                     taskRepository.save(task);
                 }
             }
-            
-            // Comments
+
+            // FIX #3 — DEDUPLICATION + COMMENTS:
+            // Tasks → Create in Jira and immediately post a rich comment with context.
+            if (result.tasks() != null) {
+                for (AiExtractionResult.JiraTask issue : result.tasks()) {
+                    Task task = Task.builder()
+                            .meeting(meeting)
+                            .toolType(meeting.getToolType())
+                            .title(issue.title())
+                            .description(issue.description())
+                            .priority(issue.priority())
+                            .assignee(issue.assignee())
+                            .status(TaskStatus.NEW)
+                            .build();
+
+                    if (issue.dueDate() != null) {
+                        try {
+                            task.setDueDate(java.time.LocalDate.parse(issue.dueDate()).atStartOfDay());
+                        } catch (Exception ignored) {}
+                    }
+
+                    task = taskRepository.save(task);
+
+                    // Push to Jira/Azure
+                    String externalId = integrationService.createExternalTask(task);
+                    task.setExternalKeyOrId(externalId);
+                    task.setStatus(TaskStatus.PUSHED);
+                    task = taskRepository.save(task);
+
+                    // FIX #3 — POST COMMENT on the created Jira issue with relevant transcript context
+                    String commentBody = buildTaskComment(meeting, issue);
+                    integrationService.addCommentToExternalTask(externalId, task, commentBody);
+                }
+            }
+
+            // Comments (meeting-level observations stored as extracted items)
             if (result.comments() != null) {
                 for (AiExtractionResult.Comment comment : result.comments()) {
                     items.add(ExtractedItem.builder()
@@ -197,12 +232,12 @@ public class MeetingServiceImpl implements MeetingService {
             }
 
             extractedItemRepository.saveAll(items);
-            
+
             meeting.setStatus(MeetingStatus.COMPLETED);
             meetingRepository.save(meeting);
-            
+
             integrationService.sendNotification("Meeting processed successfully: " + meeting.getTitle());
-            
+
         } catch (Exception e) {
             log.error("Error processing meeting {}", id, e);
             meeting.setStatus(MeetingStatus.FAILED);
@@ -258,7 +293,38 @@ public class MeetingServiceImpl implements MeetingService {
                 meeting.getUpdatedAt()
         );
     }
-    
+
+    /**
+     * Builds a rich comment body for a Jira ticket summarising the transcript context,
+     * assignee, action items, and due date. Posted immediately after ticket creation.
+     */
+    private String buildTaskComment(Meeting meeting, AiExtractionResult.JiraTask issue) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("=== AI Scrum Assistant — Auto-generated Comment ===\n\n");
+        sb.append("Meeting: ").append(meeting.getTitle()).append("\n");
+        sb.append("Meeting Date: ").append(meeting.getMeetingDate() != null ? meeting.getMeetingDate().toString() : "N/A").append("\n\n");
+
+        if (issue.assignee() != null && !issue.assignee().isBlank()) {
+            sb.append("Assignee: ").append(issue.assignee()).append("\n");
+        }
+        if (issue.priority() != null && !issue.priority().isBlank()) {
+            sb.append("Priority: ").append(issue.priority()).append("\n");
+        }
+        if (issue.dueDate() != null && !issue.dueDate().isBlank()) {
+            sb.append("Due Date: ").append(issue.dueDate()).append("\n");
+        }
+        if (issue.sourceSentence() != null && !issue.sourceSentence().isBlank()) {
+            sb.append("\nSource (from transcript):\n\"").append(issue.sourceSentence()).append("\"\n");
+        }
+        if (issue.description() != null && !issue.description().isBlank()) {
+            sb.append("\nContext:\n").append(issue.description()).append("\n");
+        }
+        if (issue.labels() != null && !issue.labels().isEmpty()) {
+            sb.append("\nLabels: ").append(String.join(", ", issue.labels())).append("\n");
+        }
+        return sb.toString();
+    }
+
     private String toJson(Object obj) {
         try {
             return objectMapper.writeValueAsString(obj);
